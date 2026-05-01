@@ -36,3 +36,8 @@ class TextEmbeddingProvider(BaseModelProvider):
     @abstractmethod
     def get_embeddings(self, text: str) -> List[float]:
         pass
+
+class AudioProvider(BaseModelProvider):
+    @abstractmethod
+    def transcribe(self, file_path: str) -> Optional[str]:
+        pass

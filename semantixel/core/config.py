@@ -19,7 +19,12 @@ class TextEmbedConfig(BaseModel):
     openai_model: str = ""
     provider: str = "HF_transformers"
 
+class AudioConfig(BaseModel):
+    HF_transformers_whisper: str = "openai/whisper-tiny"
+    provider: str = "HF_transformers"
+
 class SemantixelConfig(BaseSettings):
+    audio: AudioConfig = Field(default_factory=AudioConfig)
     batch_size: int = 16
     clip: CLIPConfig = Field(default_factory=CLIPConfig)
     deep_scan: bool = True

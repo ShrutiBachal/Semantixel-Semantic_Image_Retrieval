@@ -18,18 +18,26 @@ class SearchService:
         self.face_service = face_service
         self.image_collection = index_service.image_collection
         self.text_collection = index_service.text_collection
+        self.audio_collection = index_service.audio_collection
         self.bm25_service = index_service.bm25_service
 
     def _process_item_id(self, item_id: str) -> Dict[str, Any]:
         """Format an ID to JSON results."""
         if ":::" in item_id:
-            video_path, timestamp = item_id.split(":::")
-            return {
-                "path": video_path,
-                "type": "video",
-                "timestamp": float(timestamp),
-                "composite_id": item_id
-            }
+            media_path, postfix = item_id.split(":::")
+            if postfix == "audio" or postfix == "ambient":
+                return {
+                    "path": media_path,
+                    "type": "audio",
+                    "composite_id": item_id
+                }
+            else:
+                return {
+                    "path": media_path,
+                    "type": "video",
+                    "timestamp": float(postfix),
+                    "composite_id": item_id
+                }
         else:
             return {
                 "path": item_id,
@@ -38,19 +46,59 @@ class SearchService:
 
     def semantic_text_search(self, query: str, top_k: int = 5, threshold: float = 0.0, media_type: str = "image") -> List[Dict[str, Any]]:
         """
-        Performs semantic search on images using CLIP text embeddings.
+        Performs semantic search across both images and transcribed audio/OCR texts
         """
-        logger.info(f"Semantic Text Search: {query} (top_k={top_k}, type={media_type})")
-        text_embedding = model_manager.clip.get_text_embeddings(query)
-        
-        # Increase pool for deduplication
+        logger.info(f"Unified Semantic Search: {query} (top_k={top_k}, type={media_type})")
         query_k = top_k * 10
-        results = self.image_collection.query(
-            query_embeddings=[text_embedding],
+        
+        # 1. Image Collection (CLIP)
+        clip_embedding = model_manager.clip.get_text_embeddings(query)
+        visual_results = self.image_collection.query(
+            query_embeddings=[clip_embedding],
             n_results=query_k
         )
         
-        return self._filter_results(results, top_k, threshold, media_type)
+        # 2. Text Collection (MiniLM)
+        minilm_embedding = model_manager.text_embed.get_embeddings(query)
+        text_results = self.text_collection.query(
+            query_embeddings=[minilm_embedding],
+            n_results=query_k
+        )
+        
+        # 3. Ambient Audio Collection (CLAP)
+        clap_embedding = model_manager.clap.get_text_embeddings(query)
+        ambient_results = self.audio_collection.query(
+            query_embeddings=[clap_embedding],
+            n_results=query_k
+        )
+        
+        # Zip and Merge
+        combined_items = []
+        if visual_results["ids"] and visual_results["ids"][0]:
+            for p, d in zip(visual_results["ids"][0], visual_results["distances"][0]):
+                combined_items.append((p, d))
+                
+        if text_results["ids"] and text_results["ids"][0]:
+            for p, d in zip(text_results["ids"][0], text_results["distances"][0]):
+                combined_items.append((p, d))
+                
+        if ambient_results["ids"] and ambient_results["ids"][0]:
+            for p, d in zip(ambient_results["ids"][0], ambient_results["distances"][0]):
+                combined_items.append((p, d))
+                
+        # Sort combined by distance ascending (lower distance = higher similarity)
+        combined_items.sort(key=lambda x: x[1])
+        
+        # Re-pack into ChromaDB native format for the filter function
+        merged_results = {
+            "ids": [[p for p, d in combined_items]],
+            "distances": [[d for p, d in combined_items]]
+        }
+        
+        if not merged_results["ids"] or not merged_results["ids"][0]:
+            return []
+            
+        return self._filter_results(merged_results, top_k, threshold, media_type)
 
     def semantic_image_search(self, image_path: str, top_k: int = 5, threshold: float = 0.0, media_type: str = "all") -> List[Dict[str, Any]]:
         """CLIP Image similarity search."""
@@ -87,20 +135,20 @@ class SearchService:
             if exclude_path and p == exclude_path:
                 continue
                 
-            is_video = ":::" in p
-            if media_type == "image" and is_video:
-                continue
-            if media_type == "video" and not is_video:
+            item_info = self._process_item_id(p)
+            item_type = item_info["type"]
+            
+            if media_type != "all" and media_type != item_type:
                 continue
                 
-            if is_video:
+            if item_type == "video":
                 base_video_path = p.split(":::")[0]
                 count = video_counts.get(base_video_path, 0)
                 if count >= MAX_FRAMES_PER_VIDEO:
                     continue
                 video_counts[base_video_path] = count + 1
             
-            final_results.append(self._process_item_id(p))
+            final_results.append(item_info)
             
             if len(final_results) >= top_k:
                 break

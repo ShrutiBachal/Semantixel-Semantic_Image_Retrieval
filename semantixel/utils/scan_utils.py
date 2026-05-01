@@ -8,7 +8,7 @@ def scan_directory(directory, exclude_directories):
     """
     Recursively scans a directory for image and video files, excluding any directories specified.
     """
-    media_extensions = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".mp4", ".mkv", ".avi", ".mov"}
+    media_extensions = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".mp4", ".mkv", ".avi", ".mov", ".mp3", ".wav", ".flac", ".m4a", ".aac"}
     images = []
     try:
         if not os.path.isdir(directory):

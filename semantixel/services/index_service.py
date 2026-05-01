@@ -23,8 +23,12 @@ class IndexService:
         self.text_collection = self.client.get_or_create_collection(
             "texts", metadata={"hnsw:space": "cosine"}
         )
+        self.audio_collection = self.client.get_or_create_collection(
+            "ambient_audio", metadata={"hnsw:space": "cosine"}
+        )
         self.bm25_service = BM25Service(index_path=os.path.join(db_path, "bm25_index.pkl"))
         self.video_extensions = {".mp4", ".mkv", ".avi", ".mov"}
+        self.audio_extensions = {".mp3", ".wav", ".flac", ".m4a", ".aac"}
 
     def run_full_scan(self):
         """
@@ -50,6 +54,10 @@ class IndexService:
         """
         batch_size = config.batch_size
         deep_scan = config.deep_scan
+        
+        # Priority De-coupling: Index fast visuals instantly, reserve audio indexing for very end
+        audio_paths = [p for p in paths if p.lower().endswith(tuple(self.audio_extensions))]
+        visual_paths = [p for p in paths if not p.lower().endswith(tuple(self.audio_extensions))]
         
         with tqdm(total=len(paths), desc="Indexing media") as pbar:
             processing_inputs = []
@@ -93,7 +101,8 @@ class IndexService:
                 processing_ids.clear()
                 processing_metadatas.clear()
 
-            for path in paths:
+            # PHASE 1: Process Visuals
+            for path in visual_paths:
                 is_video = path.lower().endswith(tuple(self.video_extensions))
                 needs_indexing = False
                 
@@ -135,7 +144,33 @@ class IndexService:
                 
                 pbar.update(1)
             
-            flush_batch() # Last one
+            flush_batch() # Last one for visual
+            
+            # PHASE 2: Process Audio Constraints Sequentially
+            for path in audio_paths:
+                results = self.text_collection.get(where={"source_file": path})
+                if not results["ids"]:
+                    transcript = model_manager.audio.transcribe(path)
+                    if transcript:
+                        text_embedding = model_manager.text_embed.get_embeddings(transcript)
+                        composite_id = f"{path}:::audio"
+                        self.text_collection.upsert(
+                            ids=[composite_id],
+                            embeddings=[text_embedding],
+                            metadatas=[{"source_file": path, "type": "audio"}]
+                        )
+                        self.bm25_service.add_document(composite_id, transcript)
+                        
+                    # Process CLAP ambient sound vector
+                    ambient_embedding = model_manager.clap.get_audio_embeddings(path)
+                    self.audio_collection.upsert(
+                        ids=[f"{path}:::ambient"],
+                        embeddings=[ambient_embedding],
+                        metadatas=[{"source_file": path, "type": "audio"}]
+                    )
+                
+                pbar.update(1)
+                
             self.bm25_service.rebuild()
 
     def cleanup_index(self, valid_paths: List[str]):
@@ -143,7 +178,10 @@ class IndexService:
         Removes stale entries from the index.
         """
         logger.info("Cleaning up index...")
-        all_ids = self.image_collection.get()["ids"]
+        all_image_ids = self.image_collection.get()["ids"]
+        all_text_ids = self.text_collection.get()["ids"]
+        all_audio_ids = self.audio_collection.get()["ids"]
+        all_ids = set(all_image_ids + all_text_ids + all_audio_ids)
         valid_paths_set = set(valid_paths)
         
         ids_to_delete = []
@@ -157,5 +195,7 @@ class IndexService:
             self.image_collection.delete(ids=ids_to_delete)
             # Find matching text IDs (they use same doc_id)
             self.text_collection.delete(ids=ids_to_delete)
+            # Delete matching ambient IDs
+            self.audio_collection.delete(ids=ids_to_delete)
             # BM25 is harder to clean individually, but rebuild() handles it if we don't call add_document for them
             # For now, we'll just leave them in BM25 until next rebuild or implement delete in BM25Service

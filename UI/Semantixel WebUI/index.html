@@ -71,6 +71,7 @@
                         <option value="all">All Media</option>
                         <option value="image">Images Only</option>
                         <option value="video">Videos Only</option>
+                        <option value="audio">Audio Only</option>
                     </select>
                 </div>
                 <div class="search-option">
@@ -286,6 +287,29 @@
                                 displayEnlargedVideo(video.src);
                                 highlightSelectedImage(resultElement);
                                 showImagePath(item.path);
+                            };
+                        } else if (item.type === 'audio') {
+                            resultElement = document.createElement('figure');
+                            resultElement.className = 'audio-container';
+                            resultElement.dataset.originalPath = item.path;
+
+                            const audio = document.createElement('audio');
+                            audio.src = `http://${window.location.hostname}:${port}/images/${encodeURIComponent(item.path)}`;
+                            audio.controls = true;
+                            audio.preload = "metadata";
+
+                            const badge = document.createElement('figcaption');
+                            badge.className = 'audio-badge';
+                            badge.textContent = `Audio Match`;
+
+                            resultElement.appendChild(audio);
+                            resultElement.appendChild(badge);
+
+                            resultElement.onclick = (e) => {
+                                if (e.target !== audio) {
+                                    highlightSelectedImage(resultElement);
+                                    showImagePath(item.path);
+                                }
                             };
                         } else {
                             resultElement = document.createElement('figure');

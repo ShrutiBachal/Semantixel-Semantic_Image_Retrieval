@@ -82,11 +82,14 @@ class BM25Service:
             # Relax threshold for BM25 scores (not 0-1)
             if score > 0:
                 doc_id = self.doc_ids[i]
-                is_video = ":::" in doc_id
                 
-                if media_type == "image" and is_video:
-                    continue
-                if media_type == "video" and not is_video:
+                if ":::" in doc_id:
+                    postfix = doc_id.split(":::")[1]
+                    item_type = "audio" if postfix == "audio" else "video"
+                else:
+                    item_type = "image"
+                
+                if media_type != "all" and media_type != item_type:
                     continue
                     
                 results.append((doc_id, score))

@@ -27,10 +27,8 @@ class HFTextEmbeddingProvider(TextEmbeddingProvider):
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(self.checkpoint, local_files_only=True)
             self.model = AutoModel.from_pretrained(self.checkpoint, local_files_only=True)
-        except (OSError, ValueError):
-            logger.info(f"Model {self.checkpoint} not found locally. Downloading...")
-            self.tokenizer = AutoTokenizer.from_pretrained(self.checkpoint)
-            self.model = AutoModel.from_pretrained(self.checkpoint)
+        except Exception as e:
+            logger.info(f"Model {self.checkpoint} not found locally. Downloading... ({e})")
             
         self.model.to(self.device)
         self.model.eval()
