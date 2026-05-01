@@ -1,7 +1,7 @@
 import os
 import yaml
 import shutil
-from typing import List, Optional
+from typing import List
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,6 +22,23 @@ class TextEmbedConfig(BaseModel):
 class AudioConfig(BaseModel):
     HF_transformers_whisper: str = "openai/whisper-tiny"
     provider: str = "HF_transformers"
+    
+class GoogleDriveConfig(BaseModel):
+    enabled: bool = False
+    client_secret_file: str = ""
+    token_file: str = "google_drive_token.json"
+    redirect_uri: str = ""
+    folder_ids: List[str] = Field(default_factory=list)
+    include_shared_drives: bool = False
+    page_size: int = 100
+    image_mime_types: List[str] = Field(default_factory=lambda: [
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/gif",
+        "image/bmp",
+        "image/tiff",
+    ])
 
 class SemantixelConfig(BaseSettings):
     audio: AudioConfig = Field(default_factory=AudioConfig)
@@ -29,6 +46,7 @@ class SemantixelConfig(BaseSettings):
     clip: CLIPConfig = Field(default_factory=CLIPConfig)
     deep_scan: bool = True
     exclude_directories: List[str] = Field(default_factory=list)
+    google_drive: GoogleDriveConfig = Field(default_factory=GoogleDriveConfig)
     include_directories: List[str] = Field(default_factory=list)
     ocr_provider: str = "doctr"
     port: int = 23107
