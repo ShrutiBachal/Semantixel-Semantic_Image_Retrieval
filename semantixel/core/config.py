@@ -21,7 +21,8 @@ class TextEmbedConfig(BaseModel):
 
 class AudioConfig(BaseModel):
     HF_transformers_whisper: str = "openai/whisper-tiny"
-    provider: str = "HF_transformers"
+    faster_whisper_model: str = "tiny.en"
+    provider: str = "faster_whisper"
     
 class GoogleDriveConfig(BaseModel):
     enabled: bool = False

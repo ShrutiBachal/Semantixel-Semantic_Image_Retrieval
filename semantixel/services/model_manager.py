@@ -5,6 +5,7 @@ from semantixel.providers.clip.hf_provider import HFCLIPProvider
 from semantixel.providers.ocr.doctr_provider import DoctrOCRProvider
 from semantixel.providers.text.hf_provider import HFTextEmbeddingProvider
 from semantixel.providers.audio.hf_audio_provider import HFAudioProvider
+from semantixel.providers.audio.faster_whisper_provider import FasterWhisperProvider
 from semantixel.providers.audio.clap_provider import HFAudioCLAPProvider
 
 class ModelManager:
@@ -69,11 +70,13 @@ class ModelManager:
     def audio(self):
         if self._audio_provider is None:
             provider_type = config.audio.provider
-            if provider_type == "HF_transformers":
+            if provider_type == "faster_whisper":
+                self._audio_provider = FasterWhisperProvider(checkpoint=config.audio.faster_whisper_model)
+            elif provider_type == "HF_transformers":
                 self._audio_provider = HFAudioProvider(checkpoint=config.audio.HF_transformers_whisper)
             else:
-                logger.warning(f"Unsupported Audio provider: {provider_type}. Falling back to HF.")
-                self._audio_provider = HFAudioProvider()
+                logger.warning(f"Unsupported Audio provider: {provider_type}. Falling back to faster_whisper.")
+                self._audio_provider = FasterWhisperProvider()
         return self._audio_provider
 
     @property

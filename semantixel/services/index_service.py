@@ -74,10 +74,10 @@ class IndexService:
         deep_scan = config.deep_scan
         
         # Priority De-coupling: Index fast visuals instantly, reserve audio indexing for very end
-        audio_paths = [p for p in paths if p.lower().endswith(tuple(self.audio_extensions))]
-        visual_paths = [p for p in paths if not p.lower().endswith(tuple(self.audio_extensions))]
+        audio_items = [m for m in media_items if m.locator.lower().endswith(tuple(self.audio_extensions))]
+        visual_items = [m for m in media_items if not m.locator.lower().endswith(tuple(self.audio_extensions))]
         
-        with tqdm(total=len(paths), desc="Indexing media") as pbar:
+        with tqdm(total=len(media_items), desc="Indexing media") as pbar:
             processing_inputs = []
             processing_ids = []
             processing_metadatas = []
@@ -120,7 +120,8 @@ class IndexService:
                 processing_metadatas.clear()
 
             # PHASE 1: Process Visuals
-            for path in visual_paths:
+            for media in visual_items:
+                path = media.locator
                 is_video = path.lower().endswith(tuple(self.video_extensions))
                 needs_indexing = False
                 
@@ -174,26 +175,38 @@ class IndexService:
             flush_batch() # Last one for visual
             
             # PHASE 2: Process Audio Constraints Sequentially
-            for path in audio_paths:
-                results = self.text_collection.get(where={"source_file": path})
+            for media in audio_items:
+                results = self.text_collection.get(where={"source_media_id": media.media_id})
                 if not results["ids"]:
-                    transcript = model_manager.audio.transcribe(path)
+                    transcript = model_manager.audio.transcribe(media.locator)
                     if transcript:
                         text_embedding = model_manager.text_embed.get_embeddings(transcript)
-                        composite_id = f"{path}:::audio"
+                        composite_id = f"{media.media_id}:::audio"
                         self.text_collection.upsert(
                             ids=[composite_id],
                             embeddings=[text_embedding],
-                            metadatas=[{"source_file": path, "type": "audio"}]
+                            metadatas=[{
+                                "source": media.source,
+                                "source_media_id": media.media_id,
+                                "locator": media.locator,
+                                "display_path": media.display_path,
+                                "type": "audio"
+                            }]
                         )
                         self.bm25_service.add_document(composite_id, transcript)
                         
                     # Process CLAP ambient sound vector
-                    ambient_embedding = model_manager.clap.get_audio_embeddings(path)
+                    ambient_embedding = model_manager.clap.get_audio_embeddings(media.locator)
                     self.audio_collection.upsert(
-                        ids=[f"{path}:::ambient"],
+                        ids=[f"{media.media_id}:::ambient"],
                         embeddings=[ambient_embedding],
-                        metadatas=[{"source_file": path, "type": "audio"}]
+                        metadatas=[{
+                                "source": media.source,
+                                "source_media_id": media.media_id,
+                                "locator": media.locator,
+                                "display_path": media.display_path,
+                                "type": "audio"
+                        }]
                     )
                 
                 pbar.update(1)
@@ -205,24 +218,22 @@ class IndexService:
         Removes stale entries from the index.
         """
         logger.info("Cleaning up index...")
-        all_image_ids = self.image_collection.get()["ids"]
-        all_text_ids = self.text_collection.get()["ids"]
-        all_audio_ids = self.audio_collection.get()["ids"]
-        all_ids = set(all_image_ids + all_text_ids + all_audio_ids)
-        valid_paths_set = set(valid_paths)
-        
-        ids_to_delete = []
-        for doc_id, metadata in zip(all_ids, all_metadatas):
-            source_media_id = metadata.get("source_media_id") if metadata else doc_id
-            if source_media_id not in valid_media_ids:
-                ids_to_delete.append(doc_id)
-        
-        if ids_to_delete:
-            logger.info(f"Removing {len(ids_to_delete)} stale entries")
-            self.image_collection.delete(ids=ids_to_delete)
-            # Find matching text IDs (they use same doc_id)
-            self.text_collection.delete(ids=ids_to_delete)
-            # Delete matching ambient IDs
-            self.audio_collection.delete(ids=ids_to_delete)
-            # BM25 is harder to clean individually, but rebuild() handles it if we don't call add_document for them
+        valid_media_ids = {m.media_id for m in valid_media_items}
+
+        for collection in [self.image_collection, self.text_collection, self.audio_collection]:
+            try:
+                collection_data = collection.get()
+                all_ids = collection_data["ids"]
+                all_metadatas = collection_data.get("metadatas") or [None] * len(all_ids)
+                
+                ids_to_delete = []
+                for doc_id, metadata in zip(all_ids, all_metadatas):
+                    source_media_id = metadata.get("source_media_id") if metadata else doc_id
+                    if source_media_id not in valid_media_ids:
+                        ids_to_delete.append(doc_id)
+                
+                if ids_to_delete:
+                    collection.delete(ids=ids_to_delete)
+            except Exception as e:
+                logger.error(f"Error cleaning up collection: {e}")
             # For now, we'll just leave them in BM25 until next rebuild or implement delete in BM25Service

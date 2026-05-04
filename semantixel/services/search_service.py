@@ -29,44 +29,43 @@ class SearchService:
         self.bm25_service = index_service.bm25_service
 
     def _process_item_id(self, item_id: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        # """Format an ID to JSON results."""
-        # if ":::" in item_id:
-        #     media_path, postfix = item_id.split(":::")
-        #     if postfix == "audio" or postfix == "ambient":
-        #         return {
-        #             "path": media_path,
-        #             "type": "audio",
-        #             "composite_id": item_id
-        #         }
-        #     else:
-        #         return {
-        #             "path": media_path,
-        #             "type": "video",
-        #             "timestamp": float(postfix),
-        #             "composite_id": item_id
-        #         }
-        # else:
-        #     return {
-        #         "path": item_id,
-        #         "type": "image"
         if metadata and (
             metadata.get("locator")
             or metadata.get("display_path")
             or metadata.get("source_media_id")
             or metadata.get("source")
+            or metadata.get("source_file")
         ):
+            path_val = metadata.get("display_path") or metadata.get("locator") or metadata.get("source_file") or item_id
+            
             result = {
-                "media_id": metadata.get("source_media_id") or item_id,
+                "media_id": metadata.get("source_media_id") or metadata.get("source_file") or item_id,
                 "source": metadata.get("source", "local"),
-                "path": metadata.get("display_path") or metadata.get("locator") or item_id,
-                "display_path": metadata.get("display_path") or metadata.get("locator") or item_id,
+                "path": path_val,
+                "display_path": path_val,
                 "type": "video" if metadata.get("type") == "video_frame" else metadata.get("type", "image"),
-                "locator": metadata.get("locator", item_id),
+                "locator": metadata.get("locator") or metadata.get("source_file") or item_id,
                 "composite_id": item_id,
             }
             if metadata.get("timestamp") is not None:
                 result["timestamp"] = float(metadata["timestamp"])
             return result
+
+        if ":::" in item_id:
+            try:
+                media_path, postfix = item_id.split(":::", 1)
+                if postfix in ("audio", "ambient"):
+                    return {
+                        "media_id": media_path,
+                        "source": "local",
+                        "path": media_path,
+                        "display_path": media_path,
+                        "type": "audio",
+                        "locator": media_path,
+                        "composite_id": item_id
+                    }
+            except ValueError:
+                pass
 
         return parse_media_id(item_id).to_result()
 
@@ -117,44 +116,48 @@ class SearchService:
         clip_embedding = model_manager.clip.get_text_embeddings(query)
         visual_results = self.image_collection.query(
             query_embeddings=[clip_embedding],
-            n_results=query_k
+            n_results=query_k,
+            include=["distances", "metadatas"]
         )
         
         # 2. Text Collection (MiniLM)
         minilm_embedding = model_manager.text_embed.get_embeddings(query)
         text_results = self.text_collection.query(
             query_embeddings=[minilm_embedding],
-            n_results=query_k
+            n_results=query_k,
+            include=["distances", "metadatas"]
         )
         
         # 3. Ambient Audio Collection (CLAP)
         clap_embedding = model_manager.clap.get_text_embeddings(query)
         ambient_results = self.audio_collection.query(
             query_embeddings=[clap_embedding],
-            n_results=query_k
+            n_results=query_k,
+            include=["distances", "metadatas"]
         )
         
         # Zip and Merge
         combined_items = []
         if visual_results["ids"] and visual_results["ids"][0]:
-            for p, d in zip(visual_results["ids"][0], visual_results["distances"][0]):
-                combined_items.append((p, d))
+            for p, d, m in zip(visual_results["ids"][0], visual_results["distances"][0], visual_results["metadatas"][0]):
+                combined_items.append((p, d, m))
                 
         if text_results["ids"] and text_results["ids"][0]:
-            for p, d in zip(text_results["ids"][0], text_results["distances"][0]):
-                combined_items.append((p, d))
+            for p, d, m in zip(text_results["ids"][0], text_results["distances"][0], text_results["metadatas"][0]):
+                combined_items.append((p, d, m))
                 
         if ambient_results["ids"] and ambient_results["ids"][0]:
-            for p, d in zip(ambient_results["ids"][0], ambient_results["distances"][0]):
-                combined_items.append((p, d))
+            for p, d, m in zip(ambient_results["ids"][0], ambient_results["distances"][0], ambient_results["metadatas"][0]):
+                combined_items.append((p, d, m))
                 
         # Sort combined by distance ascending (lower distance = higher similarity)
         combined_items.sort(key=lambda x: x[1])
         
         # Re-pack into ChromaDB native format for the filter function
         merged_results = {
-            "ids": [[p for p, d in combined_items]],
-            "distances": [[d for p, d in combined_items]]
+            "ids": [[item[0] for item in combined_items]],
+            "distances": [[item[1] for item in combined_items]],
+            "metadatas": [[item[2] for item in combined_items]]
         }
         
         if not merged_results["ids"] or not merged_results["ids"][0]:
@@ -205,6 +208,7 @@ class SearchService:
         similarities = [1 - d for d in distances]
         final_results = []
         video_counts = {}
+        seen_media_ids = set()
         MAX_FRAMES_PER_VIDEO = 1
         
         for item_id, s, metadata in zip(ids, similarities, metadatas):
@@ -214,18 +218,22 @@ class SearchService:
             if exclude_path and item_id == exclude_path:
                 continue
                 
-            item_info = self._process_item_id(p)
+            item_info = self._process_item_id(item_id, metadata)
             item_type = item_info["type"]
             
             if media_type != "all" and media_type != item_type:
                 continue
                 
             if item_type == "video":
-                base_video_path = p.split(":::")[0]
+                base_video_path = item_id.split(":::")[0]
                 count = video_counts.get(base_video_path, 0)
                 if count >= MAX_FRAMES_PER_VIDEO:
                     continue
                 video_counts[base_video_path] = count + 1
+            else:
+                if item_info["media_id"] in seen_media_ids:
+                    continue
+                seen_media_ids.add(item_info["media_id"])
             
             final_results.append(item_info)
             
